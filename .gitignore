@@ -1,0 +1,33 @@
+# 数据集文件夹
+Dataset/
+
+# 运行输出和日志文件夹
+runs/
+logs/
+logs_train/
+**/logs/
+**/runs/
+
+# PyTorch 模型文件
+*.pth
+*.pt
+*.pkl
+cifar10_model/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# 其他
+*.log
