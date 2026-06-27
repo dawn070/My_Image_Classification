@@ -58,12 +58,12 @@ def train_epoch(model, loader, loss_fn_ce, loss_fn_supcon, alpha, optimizer, dev
             outputs, emb = model(imgs)
             loss_ce = lam * loss_fn_ce(outputs, targets_a) + (1.0 - lam) * loss_fn_ce(outputs, targets_b)
             loss_supcon = lam * loss_fn_supcon(emb, targets_a) + (1.0 - lam) * loss_fn_supcon(emb, targets_b)
-            loss = loss_ce + alpha*loss_supcon
+            loss = (1-alpha)*loss_ce + alpha*loss_supcon
         else:
             outputs, emb = model(imgs)
             loss_ce = loss_fn_ce(outputs, targets)
             loss_supcon = loss_fn_supcon(emb, targets)
-            loss = loss_ce + alpha*loss_supcon
+            loss = (1-alpha)*loss_ce + alpha*loss_supcon
 
         optimizer.zero_grad()
         loss.backward()
@@ -96,7 +96,7 @@ def evaluate(model, loader, loss_fn_ce, loss_fn_supcon, alpha, device, epoch, ep
         outputs, emb = model(imgs)
         loss_ce = loss_fn_ce(outputs, targets)
         loss_supcon = loss_fn_supcon(emb, targets)
-        loss = loss_ce + alpha*loss_supcon
+        loss = (1-alpha)*loss_ce + alpha*loss_supcon
 
         total_loss += loss.item()
         total_loss_ce += loss_ce.item()
@@ -131,7 +131,7 @@ def detailed_test_evaluate(model, loader, loss_fn_ce, loss_fn_supcon, alpha, dev
         outputs, emb = model(imgs)
         loss_ce = loss_fn_ce(outputs, targets)
         loss_supcon = loss_fn_supcon(emb, targets)
-        loss = loss_ce + alpha*loss_supcon
+        loss = (1-alpha)*loss_ce + alpha*loss_supcon
 
         total_loss += loss.item()
 
@@ -271,6 +271,7 @@ def main():
     val_losses, val_losses_ce, val_losses_supcon = [], [], []
     lr_history = []
     best_val_loss = float('inf')
+    best_val_acc = 0.0
 
     for epoch in range(args.epochs):
         tr_loss, tr_loss_ce, tr_loss_supcon = train_epoch(
@@ -311,8 +312,13 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(args.save_dir, 'best_model.pth'))
-            print(f'    [*] Best model saved (val_loss={val_loss:.4f})')
+            torch.save(model.state_dict(), os.path.join(args.save_dir, 'best_loss_model.pth'))
+            print(f'    [*] Best loss model saved (val_loss={val_loss:.4f})')
+
+        if val_accuracy > best_val_acc:
+            best_val_acc = val_accuracy
+            torch.save(model.state_dict(), os.path.join(args.save_dir, 'best_acc_model.pth'))
+            print(f'    [*] Best acc model saved (val_acc={val_accuracy:.4f})')
 
         scheduler.step()
 
@@ -324,40 +330,83 @@ def main():
         os.path.join(args.save_dir, 'training_curves.png')
     )
 
-    # 加载验证集最优模型权重再进行测试
-    model.load_state_dict(torch.load(os.path.join(args.save_dir, 'best_model.pth')))
-    print(f'Loaded best model (val_loss={best_val_loss:.4f}) for test evaluation.')
+    print('\n========== Test Evaluation ==========')
+    print(f'Best Val Loss: {best_val_loss:.4f}')
+    print(f'Best Val Acc:  {best_val_acc:.4f}')
 
-    # 训练完成后，在测试集上做最终评估
-    print('Evaluating on test set...')
-    test_loss, top1_acc, top5_acc, macro_f1, test_preds, test_targets = \
-        detailed_test_evaluate(
-            model, 
-            test_loader, 
-            loss_fn_ce,
-            loss_fn_supcon,
-            args.alpha, 
-            args.device,
+    # 测试函数
+    def evaluate_and_save(model, loader, loss_fn_ce, loss_fn_supcon, alpha, device, save_dir, model_name):
+        print(f'\n--- Evaluating with {model_name} ---')
+        test_loss, top1_acc, top5_acc, macro_f1, test_preds, test_targets = \
+            detailed_test_evaluate(
+                model,
+                test_loader,
+                loss_fn_ce,
+                loss_fn_supcon,
+                args.alpha,
+                args.device,
             )
 
-    # 打印并保存指标
-    metrics_str = (
-        '========== Test Set Metrics ==========\n'
-        f'Test Loss:     {test_loss:.4f}\n'
-        f'Top-1 Acc:     {top1_acc:.4f}  ({top1_acc * 100:.2f}%)\n'
-        f'Top-5 Acc:     {top5_acc:.4f}  ({top5_acc * 100:.2f}%)\n'
-        f'Macro-F1:      {macro_f1:.4f}\n'
-        '======================================\n'
+        # 打印指标
+        metrics_str = (
+            f'========== {model_name} Test Metrics ==========\n'
+            f'Test Loss:     {test_loss:.4f}\n'
+            f'Top-1 Acc:     {top1_acc:.4f}  ({top1_acc * 100:.2f}%)\n'
+            f'Top-5 Acc:     {top5_acc:.4f}  ({top5_acc * 100:.2f}%)\n'
+            f'Macro-F1:      {macro_f1:.4f}\n'
+            '===============================================\n'
+        )
+        print(metrics_str)
+
+        # 保存指标
+        metrics_file = os.path.join(save_dir, f'{model_name}_metrics.txt')
+        with open(metrics_file, 'w', encoding='utf-8') as f:
+            f.write(metrics_str)
+        print(f'[INFO] Metrics saved to {metrics_file}')
+
+        # 保存混淆矩阵
+        cm_file = os.path.join(save_dir, f'{model_name}_confusion_matrix.png')
+        plot_confusion_matrix(test_targets, test_preds, cm_file)
+        print(f'[INFO] Confusion matrix saved to {cm_file}')
+
+        return test_loss, top1_acc, top5_acc, macro_f1
+
+    # 1. 用最低 loss 模型测试
+    model.load_state_dict(torch.load(os.path.join(args.save_dir, 'best_loss_model.pth')))
+    print(f'Loaded best loss model (val_loss={best_val_loss:.4f})')
+    loss_results = evaluate_and_save(
+        model, test_loader, loss_fn_ce, loss_fn_supcon,
+        args.alpha, args.device, args.save_dir, 'best_loss_model'
     )
-    print(metrics_str)
-    with open(os.path.join(args.save_dir, 'test_metrics.txt'), 'w', encoding='utf-8') as f:
-        f.write(metrics_str)
-    print(f'[INFO] Test metrics saved to {os.path.join(args.save_dir, "test_metrics.txt")}')
 
-    plot_confusion_matrix(test_targets, test_preds,
-                          os.path.join(args.save_dir, 'confusion_matrix.png'))
+    # 2. 用最高 acc 模型测试
+    model.load_state_dict(torch.load(os.path.join(args.save_dir, 'best_acc_model.pth')))
+    print(f'Loaded best acc model (val_acc={best_val_acc:.4f})')
+    acc_results = evaluate_and_save(
+        model, test_loader, loss_fn_ce, loss_fn_supcon,
+        args.alpha, args.device, args.save_dir, 'best_acc_model'
+    )
 
-    print('Done!')
+    # 汇总对比
+    summary_str = (
+        '\n========== Model Comparison Summary ==========\n'
+        f'Metric           | Best Loss Model | Best Acc Model\n'
+        f'-----------------+-----------------+---------------\n'
+        f'Test Loss        | {loss_results[0]:.4f}           | {acc_results[0]:.4f}\n'
+        f'Top-1 Acc (%)    | {loss_results[1]*100:6.2f}         | {acc_results[1]*100:6.2f}\n'
+        f'Top-5 Acc (%)    | {loss_results[2]*100:6.2f}         | {acc_results[2]*100:6.2f}\n'
+        f'Macro-F1         | {loss_results[3]:.4f}           | {acc_results[3]:.4f}\n'
+        '==============================================\n'
+    )
+    print(summary_str)
+
+    # 保存汇总
+    summary_file = os.path.join(args.save_dir, 'model_comparison_summary.txt')
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        f.write(summary_str)
+    print(f'[INFO] Comparison summary saved to {summary_file}')
+
+    print('\nDone!')
 
 
 if __name__ == '__main__':
